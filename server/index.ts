@@ -1,12 +1,12 @@
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
-import { serveStatic, log } from "./vite";
+import { setupVite, serveStatic, log } from "./vite";
 import { initializeDatabase } from "./db";
 import csurf from "csurf";
 import cookieParser from "cookie-parser";
 import helmet from 'helmet';
 
-export const app = express();
+const app = express();
 
 // Apply Helmet middleware for secure HTTP headers
 app.use(helmet({
@@ -48,62 +48,121 @@ const csrfProtection = csurf({
   }
 });
 
-const csrfExemptRoutes = [
-  '/api/login', '/api/register', '/api/logout', '/api/me', '/api/csrf-token',
-  '/api/job-postings/latest', '/api/professional-profiles/featured',
-  '/api/professionals/me', '/api/professionals/me/expertise',
-  '/api/professionals/me/certifications', '/api/company-profiles',
-  '/api/company-profiles/by-user', '/api/resources/featured',
-  '/api/create-test-admin', '/api/create-admin', '/api/admin/make-admin',
-  '/api/admin/company-profiles', '/api/admin/professional-profiles',
-  '/api/admin/job-postings', '/api/admin/resources',
-  '/api/admin/auth/login', '/api/admin/auth/logout', '/api/admin/auth/refresh-token',
-  '/api/admin/founder', '/api/reviews', '/api/notifications', '/api/notifications/unread',
-  '/api/notifications/read-all', '/api/notification-preferences',
-  '/api/auth/google', '/api/auth/google/callback',
-  '/api/auth/linkedin', '/api/auth/linkedin/callback'
-];
-
-const methodSpecificExemptions = [
-  { path: '/api/professionals/me', method: 'PUT' },
-  { path: '/api/professionals/me/expertise', method: 'POST' },
-  { path: '/api/professionals/me/certifications', method: 'POST' },
-  { path: '/api/company-profiles', method: 'POST' },
-  { path: '/api/company-profiles/:id', method: 'PUT' },
-  { path: '/api/admin/auth/login', method: 'POST' },
-  { path: '/api/admin/auth/logout', method: 'POST' },
-  { path: '/api/admin/auth/refresh-token', method: 'POST' }
-];
-
-const idBasedPatterns = [
-  '/api/company-profiles/:id', '/api/professionals/:id', '/api/job-postings/:id',
-  '/api/resources/:id', '/api/admin/company-profiles/:id/verify',
-  '/api/admin/company-profiles/:id/featured', '/api/admin/professional-profiles/:id/featured',
-  '/api/admin/job-postings/:id/featured', '/api/admin/job-postings/:id/status',
-  '/api/admin/resources/:id/featured', '/api/admin/resources/:id',
-  '/api/reviews/:id', '/api/professionals/:id/reviews', '/api/companies/:id/reviews',
-  '/api/consultations/:id/review', '/api/notifications/:id', '/api/notifications/:id/read'
-];
-
-const matchesPattern = (path: string, pattern: string): boolean => {
-  const patternParts = pattern.split('/');
-  const pathParts = path.split('/');
-  if (patternParts.length !== pathParts.length) return false;
-  return patternParts.every((part, i) =>
-    part.startsWith(':') || part === pathParts[i]
-  );
-};
-
+// Apply CSRF protection to all routes except specific API endpoints that need to be exempt
 app.use((req, res, next) => {
+  // These endpoints are specifically exempt from CSRF protection
+  const csrfExemptRoutes = [
+    '/api/login',
+    '/api/register',
+    '/api/logout',
+    '/api/me',
+    '/api/csrf-token',
+    '/api/job-postings/latest',
+    '/api/professional-profiles/featured',
+    '/api/professionals/me',
+    '/api/professionals/me/expertise',
+    '/api/professionals/me/certifications',
+    '/api/company-profiles',
+    '/api/company-profiles/by-user',
+    '/api/resources/featured',
+    '/api/create-test-admin',
+    '/api/create-admin',
+    '/api/admin/make-admin',
+    '/api/admin/company-profiles',
+    '/api/admin/professional-profiles',
+    '/api/admin/job-postings',
+    '/api/admin/resources',
+    '/api/admin/auth/login',      // Added admin auth routes
+    '/api/admin/auth/logout',     // Added admin auth routes
+    '/api/admin/auth/refresh-token', // Added admin auth routes
+    '/api/admin/founder',         // Added founder routes
+    '/api/reviews',
+    '/api/notifications',
+    '/api/notifications/unread',
+    '/api/notifications/read-all',
+    '/api/notification-preferences',
+    '/api/auth/google',
+    '/api/auth/google/callback',
+    '/api/auth/linkedin',
+    '/api/auth/linkedin/callback'
+  ];
+  
+  // We should treat all API routes that start with '/api/me/' as exempt for GET requests
+  app.use((req, res, next) => {
+    if (req.method === 'GET' && req.path.startsWith('/api/me/')) {
+      console.log(`CSRF protection bypassed for ${req.method} ${req.path}`);
+      next();
+      return;
+    }
+    next();
+  });
+  
+  // Special exempt routes handling for specific HTTP methods
+  const methodSpecificExemptions = [
+    { path: '/api/professionals/me', method: 'PUT' },
+    { path: '/api/professionals/me/expertise', method: 'POST' },
+    { path: '/api/professionals/me/certifications', method: 'POST' },
+    { path: '/api/company-profiles', method: 'POST' },
+    { path: '/api/company-profiles/:id', method: 'PUT' },
+    { path: '/api/admin/auth/login', method: 'POST' },
+    { path: '/api/admin/auth/logout', method: 'POST' },
+    { path: '/api/admin/auth/refresh-token', method: 'POST' }
+  ];
+  
+  // Function to check if a path matches a route pattern
+  const matchesPattern = (path: string, pattern: string): boolean => {
+    // Exact match
+    if (path === pattern) return true;
+    
+    // Check for pattern with ID params like '/api/company-profiles/:id'
+    const patternParts = pattern.split('/');
+    const pathParts = path.split('/');
+    
+    if (patternParts.length !== pathParts.length) return false;
+    
+    for (let i = 0; i < patternParts.length; i++) {
+      // Skip parameter parts (starting with ':')
+      if (patternParts[i].startsWith(':')) continue;
+      if (patternParts[i] !== pathParts[i]) return false;
+    }
+    
+    return true;
+  };
+
+  // Add ID-based patterns for exempt routes
+  const idBasedPatterns = [
+    '/api/company-profiles/:id',
+    '/api/professionals/:id',
+    '/api/job-postings/:id',
+    '/api/resources/:id',
+    '/api/admin/company-profiles/:id/verify',
+    '/api/admin/company-profiles/:id/featured',
+    '/api/admin/professional-profiles/:id/featured',
+    '/api/admin/job-postings/:id/featured',
+    '/api/admin/job-postings/:id/status',
+    '/api/admin/resources/:id/featured',
+    '/api/admin/resources/:id',
+    '/api/reviews/:id',
+    '/api/professionals/:id/reviews',
+    '/api/companies/:id/reviews',
+    '/api/consultations/:id/review',
+    '/api/notifications/:id',
+    '/api/notifications/:id/read'
+  ];
+  
+  // Check if the current request path is in the exempt list, matches an ID-based pattern,
+  // or matches a specific method+path combination
   if (
-    csrfExemptRoutes.includes(req.path) ||
-    idBasedPatterns.some(p => matchesPattern(req.path, p)) ||
-    methodSpecificExemptions.some(p => p.path === req.path && p.method === req.method) ||
-    (req.method === 'GET' && req.path.startsWith('/api/me/'))
+    csrfExemptRoutes.some(path => req.path === path) ||
+    idBasedPatterns.some(pattern => matchesPattern(req.path, pattern)) ||
+    methodSpecificExemptions.some(item => req.path === item.path && req.method === item.method)
   ) {
-    console.log(`CSRF bypassed for ${req.method} ${req.path}`);
-    return next();
+    console.log(`CSRF protection bypassed for ${req.method} ${req.path}`);
+    next();
+    return;
   }
+  
+  // For all other requests, apply CSRF protection
   csrfProtection(req, res, next);
 });
 
@@ -151,13 +210,84 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  // Initialize database connection with retry capability
   await initializeDatabase();
-  await registerRoutes(app);
+  
+  const server = await registerRoutes(app);
 
-  if (process.env.NODE_ENV === "production") {
+  app.use(async (err: any, req: Request, res: Response, _next: NextFunction) => {
+    // Special handling for CSRF errors
+    if (err.code === 'EBADCSRFTOKEN') {
+      console.error('CSRF error details:', {
+        path: req.path,
+        method: req.method,
+        headers: req.headers,
+        cookies: req.cookies,
+        body: req.body
+      });
+      return res.status(403).json({
+        message: "CSRF token validation failed",
+        details: "The form submission security token is invalid or expired. Please refresh the page and try again."
+      });
+    }
+    
+    // Check for database connection errors and try to reconnect
+    if (err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT' || 
+        err.message?.includes('database') || err.message?.includes('pool') ||
+        err.message?.includes('connection')) {
+      console.error('Database connection error detected, attempting to reconnect:', err);
+      
+      try {
+        // Try to re-initialize the database connection
+        await initializeDatabase();
+        
+        // If the request was a database query, we can't retry it automatically
+        // Just let the client know to retry
+        return res.status(503).json({
+          message: "Database connection reestablished. Please retry your request.",
+          retry: true
+        });
+      } catch (reconnectErr) {
+        console.error('Failed to reconnect to database:', reconnectErr);
+      }
+    }
+    
+    const status = err.status || err.statusCode || 500;
+    const message = err.message || "Internal Server Error";
+
+    res.status(status).json({ message });
+    console.error('Server error:', err);
+  });
+
+  // importantly only setup vite in development and after
+  // setting up all the other routes so the catch-all route
+  // doesn't interfere with the other routes
+  if (app.get("env") === "development") {
+    await setupVite(app, server);
+  } else {
     serveStatic(app);
   }
-})();
 
-// ✅ No server.listen — export app for serverless
-export default app;
+  // Serve the app on port 5000 as expected by workflow
+  // this serves both the API and the client.
+  const startServer = (port: number) => {
+    server.listen({
+      port,
+      host: "0.0.0.0",
+      reusePort: true,
+      keepAliveTimeout: 65000, // Increase keep-alive timeout
+      headersTimeout: 66000, // Increase headers timeout
+    }, () => {
+      log(`serving on port ${port}`);
+    }).on('error', (err: any) => {
+      if (err.code === 'EADDRINUSE') {
+        log(`Port ${port} is already in use, trying port ${port + 1}...`);
+        startServer(port + 1);
+      } else {
+        console.error('Server error:', err);
+      }
+    });
+  };
+  
+  startServer(5000);
+})();
